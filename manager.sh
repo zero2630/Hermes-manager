@@ -18,16 +18,20 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "Нужна команда $1."
 }
 
+install_apt_package() {
+    require_command apt-get
+    require_command sudo
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends "$1"
+}
+
 ensure_whiptail() {
     if command -v whiptail >/dev/null 2>&1; then
         return 0
     fi
 
-    require_command apt-get
-    require_command sudo
     printf 'Устанавливаю whiptail для меню…\n'
-    sudo apt-get update
-    sudo apt-get install -y --no-install-recommends whiptail
+    install_apt_package whiptail
     require_command whiptail
 }
 
@@ -75,7 +79,24 @@ manage_browser() {
     printf 'Camofox отвечает на %s.\n' "$CAMOFOX_ENDPOINT"
 }
 
+ensure_libatomic() {
+    if ! command -v dpkg-query >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local architecture
+    architecture="$(dpkg --print-architecture)"
+    if [[ "$(dpkg-query -W -f='${db:Status-Status}' "libatomic1:$architecture" 2>/dev/null)" == installed ]]; then
+        return 0
+    fi
+
+    printf 'Устанавливаю libatomic1 для Node.js…\n'
+    install_apt_package libatomic1
+}
+
 install_hermes() (
+    ensure_libatomic
+
     if command -v hermes >/dev/null 2>&1; then
         printf 'Hermes уже установлен.\n'
         exit 0
