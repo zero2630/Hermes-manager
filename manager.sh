@@ -18,6 +18,19 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "Нужна команда $1."
 }
 
+ensure_whiptail() {
+    if command -v whiptail >/dev/null 2>&1; then
+        return 0
+    fi
+
+    require_command apt-get
+    require_command sudo
+    printf 'Устанавливаю whiptail для меню…\n'
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends whiptail
+    require_command whiptail
+}
+
 require_hermes() {
     command -v hermes >/dev/null 2>&1 || fail 'Сначала выберите Install Hermes в меню.'
 }
@@ -74,17 +87,37 @@ install_hermes() (
     bash "$installer" --non-interactive --skip-browser --skip-computer-use
 )
 
+select_terminal_backend() {
+    whiptail --title 'Terminal backend' --notags --default-item local \
+        --ok-button 'Select' --cancel-button 'Back' --output-fd 3 \
+        --menu 'Where should Hermes run commands?' 0 0 0 \
+        local 'Local - run commands on the VPS' \
+        docker 'Docker sandbox - run commands in a separate container' \
+        3>&1 1>&2
+}
+
 install_stack() {
+    local terminal_backend=local
+    if [[ -t 0 && -t 2 ]]; then
+        ensure_whiptail
+        terminal_backend="$(select_terminal_backend)" || return 130
+    fi
+
     require_command curl
     prepare_browser_script
     install_hermes
     require_hermes
 
-    hermes config set terminal.backend local
-
     if ! browser_healthy; then
         manage_browser
     fi
+
+    if [[ "$terminal_backend" == docker ]]; then
+        require_command docker
+        docker info >/dev/null ||
+            fail 'Для Docker sandbox пользователю Hermes нужен доступ к Docker без sudo. Настройте доступ и повторите Install Hermes.'
+    fi
+    hermes config set terminal.backend "$terminal_backend"
 
     hermes config set CAMOFOX_URL "$CAMOFOX_ENDPOINT"
     if hermes plugins show camofox >/dev/null 2>&1; then
@@ -98,9 +131,9 @@ install_stack() {
     cat <<'NEXT'
 
 Hermes и Camofox настроены. Для нового бота выберите в меню по порядку:
-  2. Select model
-  3. Set up Telegram gateway
-  4. Start gateway
+  Select model
+  Set up Telegram gateway
+  Start gateway
 
 Если Gateway уже работал, примените настройки через hermes gateway restart.
 NEXT
@@ -150,10 +183,10 @@ show_status() {
 usage() {
     cat <<'USAGE'
 Запуск от обычного пользователя на Linux VPS с systemd:
-  bash manager.sh            Открыть меню
+  bash manager.sh            Открыть меню whiptail (пакет установится при необходимости)
 
 Прямые команды:
-  bash manager.sh install    Установить Hermes и подключить Camofox
+  bash manager.sh install    Установить Hermes и Camofox, выбрать терминал
   bash manager.sh model      Настроить модель и провайдера
   bash manager.sh telegram   Настроить Telegram Gateway
   bash manager.sh gateway    Включить автозапуск и запустить Gateway
@@ -179,41 +212,44 @@ run_action() {
 }
 
 menu() {
-    local choice action
+    [[ -t 0 && -t 2 ]] || fail 'Откройте bash manager.sh в интерактивном терминале.'
+    ensure_whiptail
+
+    local action status
     while true; do
-        cat <<'MENU'
+        action="$(whiptail --title 'Hermes Manager' --notags \
+            --ok-button 'Select' --cancel-button 'Exit' --output-fd 3 \
+            --menu 'Use the arrow keys to choose an action.' 0 0 0 \
+            install 'Install Hermes' \
+            model 'Select model' \
+            telegram 'Set up Telegram gateway' \
+            gateway 'Start gateway' \
+            3>&1 1>&2)" || return 0
 
-Hermes Manager
-  1. Install Hermes
-  2. Select model
-  3. Set up Telegram gateway
-  4. Start gateway
-
-  0. Exit
-MENU
-        printf 'Choose an option: '
-        IFS= read -r choice || return 0
-        case "$choice" in
-            1) action=install ;;
-            2) action=model ;;
-            3) action=telegram ;;
-            4) action=gateway ;;
-            0) return 0 ;;
-            *) printf 'Choose a number from 0 to 4.\n' >&2; continue ;;
-        esac
-
+        status=0
         # Run each action separately so a failure returns to the menu.
-        bash "${BASH_SOURCE[0]}" "$action" || printf 'The action failed. See the message above.\n' >&2
+        bash "${BASH_SOURCE[0]}" "$action" || status=$?
+        if (( status == 130 )); then
+            continue
+        fi
+        if (( status != 0 )); then
+            printf 'The action failed. See the message above.\n' >&2
+        fi
+        printf '\nPress Enter to return to the menu... '
+        IFS= read -r _ || return 0
     done
 }
 
 [[ $# -le 1 ]] || fail 'Укажите одно действие. Список команд: bash manager.sh --help.'
 case "${1:-}" in
     -h|--help|help) usage; exit 0 ;;
-    '') menu; exit 0 ;;
 esac
 
 [[ "$(uname -s)" == Linux ]] || fail 'Нужен Linux VPS.'
 [[ "$(id -u)" != 0 ]] || fail 'Запустите manager.sh от пользователя Hermes без sudo: локальные команды агента выполняются от его имени.'
 
-run_action "${1#--}"
+if [[ $# -eq 0 ]]; then
+    menu
+else
+    run_action "${1#--}"
+fi
