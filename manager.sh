@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly BROWSER_SCRIPT="$SCRIPT_DIR/camofox.sh"
+readonly CAMOFOX_SCRIPT_URL='https://raw.githubusercontent.com/zero2630/Hermes-manager/refs/heads/main/camofox.sh'
 readonly CAMOFOX_ENDPOINT='http://127.0.0.1:9377'
 readonly HERMES_INSTALLER='https://hermes-agent.nousresearch.com/install.sh'
 
@@ -21,9 +22,31 @@ require_hermes() {
     command -v hermes >/dev/null 2>&1 || fail 'Сначала выберите Install Hermes в меню.'
 }
 
-require_browser_script() {
-    [[ -f "$BROWSER_SCRIPT" && -r "$BROWSER_SCRIPT" ]] || fail "Положите camofox.sh рядом с manager.sh ($SCRIPT_DIR)."
-}
+prepare_browser_script() (
+    if [[ -f "$BROWSER_SCRIPT" && -r "$BROWSER_SCRIPT" ]]; then
+        exit 0
+    fi
+
+    download="$(mktemp "$SCRIPT_DIR/.camofox.sh.XXXXXXXX")" ||
+        fail "Нужна возможность записать camofox.sh в $SCRIPT_DIR."
+    trap 'rm -f -- "$download"' EXIT
+
+    printf 'Скачиваю camofox.sh…\n'
+    curl --proto '=https' --proto-redir '=https' --location --fail \
+        --silent --show-error --connect-timeout 10 --max-time 60 \
+        --output "$download" "$CAMOFOX_SCRIPT_URL" || fail 'Не удалось скачать camofox.sh.'
+
+    IFS= read -r shebang < "$download" || fail 'Получен пустой или неполный camofox.sh.'
+    case "$shebang" in
+        '#!/usr/bin/env bash'|'#!/bin/bash') ;;
+        *) fail 'Полученный camofox.sh не начинается с Bash shebang.' ;;
+    esac
+    bash -n "$download" || fail 'Полученный camofox.sh содержит синтаксическую ошибку.'
+    chmod u+x "$download"
+    mv -nT -- "$download" "$BROWSER_SCRIPT"
+    [[ -f "$BROWSER_SCRIPT" && -r "$BROWSER_SCRIPT" ]] ||
+        fail "Не удалось сохранить camofox.sh в $SCRIPT_DIR."
+)
 
 browser_healthy() {
     curl --noproxy '*' --fail --silent --max-time 5 \
@@ -31,8 +54,8 @@ browser_healthy() {
 }
 
 manage_browser() {
-    require_browser_script
     require_command curl
+    prepare_browser_script
     # Соседний скрипт управляет Docker и ждёт готовности API перед выходом.
     bash "$BROWSER_SCRIPT"
     browser_healthy || fail "Camofox не отвечает на $CAMOFOX_ENDPOINT/health."
@@ -52,8 +75,8 @@ install_hermes() (
 )
 
 install_stack() {
-    require_browser_script
     require_command curl
+    prepare_browser_script
     install_hermes
     require_hermes
 
@@ -138,7 +161,7 @@ usage() {
   bash manager.sh browser    Отдельно обновить или восстановить Camofox
   bash manager.sh status     Проверить терминал, браузер и Gateway
 
-Положите camofox.sh рядом с manager.sh.
+При установке manager.sh скачивает camofox.sh из zero2630/Hermes-manager, если файла нет рядом.
 USAGE
 }
 
